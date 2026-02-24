@@ -1,0 +1,138 @@
+LibRo API - Guia para Frontend (modo single-user)
+=================================================
+
+Resumen
+-------
+Esta API esta configurada para 1 sola persona.
+No hay login ni seleccion de usuario en frontend.
+No existe entidad User en la base actual.
+No enviar userId en requests.
+
+Base URL local
+--------------
+http://localhost:4000
+
+Endpoints clave
+---------------
+1) Healthcheck
+GET /health
+
+2) Buscar libros (Open Library via backend)
+GET /api/books/search?query={texto}
+
+Respuesta (array):
+[
+  {
+    "title": "...",
+    "author": "...",
+    "year": 2001,
+    "isbn": "...",
+    "coverUrl": "https://..."
+  }
+]
+
+3) Crear libro local (si no existe por externalId)
+POST /books
+Body JSON:
+{
+  "externalId": "openlibrary:OL123M",
+  "title": "Clean Code",
+  "author": "Robert C. Martin",
+  "coverImage": "https://covers.openlibrary.org/b/olid/OL123M-L.jpg",
+  "publishedYear": 2008
+}
+
+4) Listar libros locales
+GET /books
+
+5) Favoritos / lista personal (single-user)
+POST /user-books
+Body JSON:
+{
+  "bookId": "UUID_DEL_BOOK_LOCAL",
+  "status": "FAVORITE"
+}
+
+Estados validos para status:
+- FAVORITE
+- TO_READ
+- READ
+
+Notas:
+- POST /user-books funciona como upsert:
+  - Si no existe, lo crea.
+  - Si ya existe para ese libro, actualiza el status.
+
+6) Listar favoritos o lista personal
+GET /user-books
+GET /user-books?status=FAVORITE
+GET /user-books?status=TO_READ
+GET /user-books?status=READ
+
+7) Eliminar de la lista personal
+DELETE /user-books/:id
+
+8) Crear reseña
+POST /reviews
+Body JSON:
+{
+  "bookId": "UUID_DEL_BOOK_LOCAL",
+  "title": "Muy buen libro",
+  "content": "Me ayudo a mejorar practicas de codigo.",
+  "rating": 5
+}
+
+9) Listar reseñas
+GET /reviews
+
+10) Ver reseñas por libro
+GET /reviews/book/:bookId
+
+11) Ver detalle de reseña
+GET /reviews/:id
+
+12) Editar reseña
+PUT /reviews/:id
+Body JSON (al menos un campo):
+{
+  "title": "Titulo actualizado",
+  "content": "Texto actualizado",
+  "rating": 4
+}
+
+13) Eliminar reseña
+DELETE /reviews/:id
+
+Flujo recomendado en frontend
+-----------------------------
+A) Buscar y guardar libro en favoritos
+1. Front llama GET /api/books/search?query=...
+2. Usuario elige resultado.
+3. Front crea/asegura libro local con POST /books (usar externalId unico).
+4. Tomar id del libro devuelto.
+5. Front llama POST /user-books con { bookId, status: "FAVORITE" }.
+
+B) Mover entre listas
+- Usar POST /user-books con mismo bookId y nuevo status.
+  Ejemplo: FAVORITE -> READ.
+
+C) Crear y mostrar reseñas
+1. Crear con POST /reviews (bookId, title, content, rating).
+2. Listar con GET /reviews o GET /reviews/book/:bookId.
+3. Editar con PUT /reviews/:id.
+4. Eliminar con DELETE /reviews/:id.
+
+Codigos esperados
+-----------------
+- 200 OK: lectura/actualizacion
+- 201 Created: creacion
+- 204 No Content: borrado
+- 400 Bad Request: validacion
+- 404 Not Found: recurso no existe
+- 500 Internal Server Error: error no controlado
+
+Importante
+----------
+- No mostrar selector de usuario en UI.
+- No enviar userId en ningun request.
+- Para favoritos, usar endpoint /user-books con status=FAVORITE.
