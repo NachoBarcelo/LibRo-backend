@@ -4,9 +4,10 @@ import app from "./app";
 dotenv.config();
 
 const port = Number(process.env.PORT ?? 4000);
+const host = "0.0.0.0";
 
-const server = app.listen(port, () => {
-  console.log(`LibRo API listening on port ${port}`);
+const server = app.listen(port, host, () => {
+  console.log(`LibRo API listening on http://${host}:${port}`);
 });
 
 process.on("SIGTERM", () => {

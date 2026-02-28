@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: libro-backend
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm ci && npm run prisma:generate && npm run build
+    startCommand: npm run prisma:migrate:deploy && npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: PORT
+        value: 10000
