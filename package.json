@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:render": "npm run prisma:migrate:deploy && node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
@@ -14,7 +15,7 @@
     "db:seed": "prisma db seed",
     "db:backfill:external-id": "tsx scripts/backfill-book-external-ids.ts",
     "db:backfill:external-id:apply": "tsx scripts/backfill-book-external-ids.ts --apply",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate && npm run build"
   },
   "repository": {
     "type": "git",
