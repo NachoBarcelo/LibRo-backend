@@ -60,6 +60,7 @@ npm start
 
 - `POST /books` → crea libro si no existe por `externalId`
 - `GET /books` → lista todos los libros
+- `GET /books/:id` → detalle completo de un libro local (incluye `userBooks`, `reviews` y `openLibrary` con metadata completa)
 - `GET /api/books/search?query=...` → busca libros en Open Library (título/autor/isbn/texto libre)
 
 Body `POST /books`:
@@ -87,6 +88,55 @@ Respuesta `GET /api/books/search?query=harry+potter`:
   }
 ]
 ```
+
+Respuesta `GET /books/:id`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-del-book",
+    "externalId": "openlibrary:OL123M",
+    "title": "Clean Code",
+    "author": "Robert C. Martin",
+    "coverImage": "https://covers.openlibrary.org/b/olid/OL123M-L.jpg",
+    "publishedYear": 2008,
+    "createdAt": "2026-02-27T10:00:00.000Z",
+    "userBooks": [
+      {
+        "id": "uuid-del-userbook",
+        "bookId": "uuid-del-book",
+        "status": "FAVORITE",
+        "createdAt": "2026-02-27T10:10:00.000Z"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "uuid-del-review",
+        "bookId": "uuid-del-book",
+        "title": "Gran lectura",
+        "content": "Me gustó mucho el enfoque práctico.",
+        "rating": 5,
+        "createdAt": "2026-02-27T10:20:00.000Z",
+        "updatedAt": "2026-02-27T10:20:00.000Z"
+      }
+    ],
+    "openLibrary": {
+      "olid": "OL123M",
+      "byBibkey": {
+        "title": "Clean Code"
+      },
+      "edition": {
+        "key": "/books/OL123M"
+      }
+    }
+  }
+}
+```
+
+Notas:
+- `openLibrary` se llena usando el `externalId` del libro local.
+- Si `externalId` no corresponde a Open Library (no contiene `OL...M`), `openLibrary` devuelve `null`.
 
 ### User Books
 

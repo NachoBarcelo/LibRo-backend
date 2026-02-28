@@ -17,19 +17,84 @@ Endpoints clave
 1) Healthcheck
 GET /health
 
-2) Buscar libros (Open Library via backend)
+2) Buscar libros por titulo (todas las coincidencias)
 GET /api/books/search?query={texto}
+
+Importante sobre este endpoint:
+- Devuelve un array con todas las coincidencias encontradas en Open Library.
+- Es el endpoint para listados y resultados de busqueda.
 
 Respuesta (array):
 [
   {
-    "title": "...",
-    "author": "...",
-    "year": 2001,
-    "isbn": "...",
-    "coverUrl": "https://..."
+    "titulo": "Clean Code",
+    "autor": "Robert C. Martin",
+    "imagen": "https://covers.openlibrary.org/b/id/123456-L.jpg",
+    "externalId": "/works/OL45883W"
   }
 ]
+
+Reglas de datos:
+- imagen: si no existe cover_i en Open Library, viene null.
+- externalId: contiene el key del work para identificar el resultado (ej: /works/OL82563W).
+
+Errores esperados:
+- Si no hay coincidencias, devuelve [] (array vacio).
+
+2.1) Buscar detalle especifico (sinopsis + generos)
+GET /api/books/search/detail?query={titulo}
+
+Importante:
+- Busca por titulo y toma el primer Work encontrado.
+- Luego consulta ediciones del Work y selecciona una por prioridad de idioma:
+  1. Español (/languages/spa)
+  2. Inglés (/languages/eng)
+  3. Cualquier otro idioma
+- Si editions falla, devuelve datos basicos sin datos de edicion.
+
+Respuesta (objeto):
+{
+  "titulo": "Clean Code",
+  "autor": "Robert C. Martin",
+  "idioma": "Español",
+  "isbn": "9781234567890",
+  "anio": "2008",
+  "editorial": "Prentice Hall",
+  "imagen": "https://covers.openlibrary.org/b/id/123456-L.jpg"
+}
+
+Reglas de fallback:
+- idioma: "Otro" cuando no sea spa/eng o cuando no haya languages.
+- isbn: null si no hay isbn_13 ni isbn_10.
+- anio: null si no hay publish_date.
+- editorial: null si no hay publishers.
+- imagen: null si no hay covers.
+
+Errores esperados:
+- 404 si search no encuentra resultados.
+
+2.2) Obtener todas las ediciones de un Work (seleccion manual)
+GET /books/{workId}/editions
+
+Ejemplos de workId validos:
+- OL82563W
+- /works/OL82563W
+
+Respuesta (array):
+[
+  {
+    "edicionId": "/books/OL12345M",
+    "idioma": "Español",
+    "isbn": "9788478884452",
+    "anio": "1999",
+    "editorial": "Salamandra",
+    "imagen": "https://covers.openlibrary.org/b/id/15155833-L.jpg"
+  }
+]
+
+Notas:
+- El backend devuelve hasta 100 ediciones por request.
+- Si no hay ediciones, devuelve [] (array vacio).
 
 3) Crear libro local (si no existe por externalId)
 POST /books
@@ -44,6 +109,63 @@ Body JSON:
 
 4) Listar libros locales
 GET /books
+
+4.1) Detalle completo de un libro local
+GET /books/:id
+
+Que devuelve:
+- Datos base del libro (titulo, autor, portada, anio, etc.)
+- userBooks: estado del libro en la lista personal (FAVORITE / TO_READ / READ)
+- reviews: todas las reseñas del libro
+- synopsis: sinopsis resuelta desde Open Library works (si existe)
+- genres: hasta 5 generos desde Open Library works
+- openLibrary: metadata completa traida desde Open Library para ese libro (payload crudo)
+
+Ejemplo de respuesta:
+{
+  "success": true,
+  "data": {
+    "id": "UUID_DEL_BOOK_LOCAL",
+    "externalId": "openlibrary:OL123M",
+    "title": "Clean Code",
+    "author": "Robert C. Martin",
+    "coverImage": "https://covers.openlibrary.org/b/olid/OL123M-L.jpg",
+    "publishedYear": 2008,
+    "createdAt": "2026-02-27T10:00:00.000Z",
+    "userBooks": [
+      {
+        "id": "UUID_USER_BOOK",
+        "bookId": "UUID_DEL_BOOK_LOCAL",
+        "status": "FAVORITE",
+        "createdAt": "2026-02-27T10:10:00.000Z"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "UUID_REVIEW",
+        "bookId": "UUID_DEL_BOOK_LOCAL",
+        "title": "Muy buen libro",
+        "content": "Me ayudo a mejorar practicas de codigo.",
+        "rating": 5,
+        "createdAt": "2026-02-27T10:20:00.000Z",
+        "updatedAt": "2026-02-27T10:20:00.000Z"
+      }
+    ],
+    "openLibrary": {
+      "olid": "OL123M",
+      "byBibkey": {
+        "title": "Clean Code"
+      },
+      "edition": {
+        "key": "/books/OL123M"
+      }
+    }
+  }
+}
+
+Nota importante:
+- El backend intenta normalizar externalId al formato /works/OL...W al crear el libro local.
+- Si externalId no puede mapearse a Open Library, openLibrary puede venir null y synopsis/genres vacios.
 
 5) Favoritos / lista personal (single-user)
 POST /user-books
@@ -107,10 +229,11 @@ Flujo recomendado en frontend
 -----------------------------
 A) Buscar y guardar libro en favoritos
 1. Front llama GET /api/books/search?query=...
-2. Usuario elige resultado.
-3. Front crea/asegura libro local con POST /books (usar externalId unico).
-4. Tomar id del libro devuelto.
-5. Front llama POST /user-books con { bookId, status: "FAVORITE" }.
+2. Recibir array de coincidencias y renderizar listado.
+3. Al seleccionar una coincidencia, pedir detalle con GET /api/books/search/detail?query=... para obtener edicion priorizada.
+4. Luego crear/asegurar libro local con POST /books (usar externalId unico).
+5. Tomar id del libro devuelto.
+6. Front llama POST /user-books con { bookId, status: "FAVORITE" }.
 
 B) Mover entre listas
 - Usar POST /user-books con mismo bookId y nuevo status.
@@ -121,6 +244,16 @@ C) Crear y mostrar reseñas
 2. Listar con GET /reviews o GET /reviews/book/:bookId.
 3. Editar con PUT /reviews/:id.
 4. Eliminar con DELETE /reviews/:id.
+
+D) Pantalla de detalle de libro en frontend
+1. Tener el id local del libro (UUID) desde GET /books o desde la creacion (POST /books).
+2. Llamar GET /books/:id al abrir la vista de detalle.
+3. Pintar:
+  - Header con title, author, coverImage, publishedYear.
+  - Estado actual leyendo data.userBooks[0]?.status (si existe).
+  - Lista de reseñas usando data.reviews.
+4. Si data.userBooks viene vacio, mostrar "Sin estado" o CTA para agregar a lista.
+5. Si data.reviews viene vacio, mostrar estado vacio "Sin reseñas aun".
 
 Codigos esperados
 -----------------

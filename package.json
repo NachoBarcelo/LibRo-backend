@@ -10,7 +10,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "db:backfill:external-id": "tsx scripts/backfill-book-external-ids.ts",
+    "db:backfill:external-id:apply": "tsx scripts/backfill-book-external-ids.ts --apply"
   },
   "repository": {
     "type": "git",
