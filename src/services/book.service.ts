@@ -19,6 +19,7 @@ interface OpenLibrarySearchDoc {
   title?: string;
   author_name?: string[];
   first_publish_year?: number;
+  language?: string[];
   cover_i?: number;
   key?: string;
 }
@@ -119,6 +120,8 @@ class FetchHttpClient implements HttpClient {
 
 const NEW_RELEASES_CACHE_KEY = "new-releases-2025-2026";
 const NEW_RELEASES_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const NEW_RELEASES_ALLOWED_YEARS = new Set([2025, 2026]);
+const NEW_RELEASES_ALLOWED_LANGUAGES = new Set(["eng", "spa"]);
 
 export class BookService {
   private readonly httpClient: HttpClient;
@@ -391,12 +394,22 @@ export class BookService {
     const allBooks = [...books2025, ...books2026];
 
     const novedades = this.shuffleArray(allBooks)
-      .filter((doc) => Boolean(doc.cover_i) && Boolean(doc.title?.trim()) && Boolean(doc.key?.trim()))
+      .filter(
+        (doc) =>
+          Boolean(doc.cover_i) &&
+          Boolean(doc.title?.trim()) &&
+          Boolean(doc.key?.trim()) &&
+          NEW_RELEASES_ALLOWED_YEARS.has(doc.first_publish_year ?? -1) &&
+          this.hasAllowedNewReleaseLanguage(doc)
+      )
       .map((doc) => this.mapOpenLibraryDocToNewReleaseItem(doc))
       .filter((item): item is BookNewReleaseDto => item !== null)
       .slice(0, 10);
 
-    this.setCachedNewReleases(NEW_RELEASES_CACHE_KEY, novedades);
+    if (novedades.length > 0) {
+      this.setCachedNewReleases(NEW_RELEASES_CACHE_KEY, novedades);
+    }
+
     return novedades;
   }
 
@@ -550,9 +563,20 @@ export class BookService {
     const timeout = setTimeout(() => abortController.abort(), OPEN_LIBRARY_TIMEOUT_MS);
 
     try {
-      const endpoint = `${OPEN_LIBRARY_SEARCH_URL}?publish_year=${year}&page=${page}&limit=50`;
-      const payload = await this.requestJson<SearchResponse>(endpoint, abortController.signal);
-      return payload.docs ?? [];
+      const legacyEndpoint = `${OPEN_LIBRARY_SEARCH_URL}?publish_year=${year}&page=${page}&limit=50`;
+      const legacyPayload = await this.requestJson<SearchResponse>(legacyEndpoint, abortController.signal);
+      const legacyDocs = legacyPayload.docs ?? [];
+
+      if (legacyDocs.length > 0) {
+        return legacyDocs;
+      }
+
+      const queryEndpoint = `${OPEN_LIBRARY_SEARCH_URL}?q=${encodeURIComponent(
+        `publish_year:${year}`
+      )}&page=${page}&limit=50`;
+
+      const queryPayload = await this.requestJson<SearchResponse>(queryEndpoint, abortController.signal);
+      return queryPayload.docs ?? [];
     } finally {
       clearTimeout(timeout);
     }
@@ -577,7 +601,7 @@ export class BookService {
     const anio = doc.first_publish_year;
     const imagen = this.buildCoverByCoverId(coverId);
 
-    if (!titulo || !workKey || !coverId || !anio || !imagen) {
+    if (!titulo || !workKey || !coverId || !anio || !imagen || !NEW_RELEASES_ALLOWED_YEARS.has(anio)) {
       return null;
     }
 
@@ -588,6 +612,16 @@ export class BookService {
       imagen,
       workKey,
     };
+  }
+
+  private hasAllowedNewReleaseLanguage(doc: OpenLibrarySearchDoc): boolean {
+    const languages = doc.language ?? [];
+
+    if (!languages.length) {
+      return false;
+    }
+
+    return languages.some((language) => NEW_RELEASES_ALLOWED_LANGUAGES.has((language ?? "").toLowerCase()));
   }
 
   private getRandomPage(): number {
@@ -608,7 +642,19 @@ export class BookService {
   }
 
   private async requestJson<T>(url: string, signal: AbortSignal): Promise<T> {
-    return this.httpClient.get<T>(url, signal);
+    try {
+      return await this.httpClient.get<T>(url, signal);
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+
+      if (error instanceof Error && error.name === "SyntaxError") {
+        throw new AppError("Open Library returned invalid JSON", 502, { url });
+      }
+
+      throw error;
+    }
   }
 
   private async fetchOpenLibraryDetails(externalId: string): Promise<unknown | null> {

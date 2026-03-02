@@ -102,6 +102,7 @@ GET /books/new-releases
 Objetivo:
 - Obtener hasta 10 libros aleatorios para la seccion "Novedades".
 - Solo usa Open Library (publicados en 2025 y 2026).
+- Solo incluye libros en ingles o español (codigos Open Library: eng / spa).
 
 Respuesta (array):
 [
@@ -120,6 +121,8 @@ Reglas de datos:
 - Si Open Library falla total/parcialmente, devuelve los disponibles o [] si no hay nada.
 - imagen siempre viene con URL valida de cover (no incluye items sin cover).
 - autor toma el primer author_name disponible; puede venir "" si no hay autor.
+- anio siempre sera 2025 o 2026.
+- idioma se filtra en backend por metadata de Open Library (solo eng/spa).
 
 Cache backend:
 - Cache en memoria por 12 horas.
