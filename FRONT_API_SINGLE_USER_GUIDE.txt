@@ -102,6 +102,8 @@ GET /books/new-releases
 Objetivo:
 - Obtener hasta 10 libros aleatorios para la seccion "Novedades".
 - Solo usa Open Library (publicados en 2025 y 2026).
+- Prioriza autores que ya existen en la lista de guardados local.
+- Si no hay coincidencias suficientes de esos autores, completa con libros al azar.
 - Solo incluye libros en ingles o español (codigos Open Library: eng / spa).
 
 Respuesta (array):
@@ -123,10 +125,12 @@ Reglas de datos:
 - autor toma el primer author_name disponible; puede venir "" si no hay autor.
 - anio siempre sera 2025 o 2026.
 - idioma se filtra en backend por metadata de Open Library (solo eng/spa).
+- Se intenta traer los ultimos (2026/2025) por autor guardado y limitar cantidad por autor para no repetir demasiado.
+- Si no hay resultados de autores guardados, el endpoint cae a modo 100% aleatorio.
 
 Cache backend:
 - Cache en memoria por 12 horas.
-- Clave interna: "new-releases-2025-2026".
+- La clave interna incluye perfil de autores guardados (cache segmentada por autores).
 - Durante ese periodo la lista puede repetirse, luego se regenera aleatoriamente.
 
 Sugerencia de uso en frontend:

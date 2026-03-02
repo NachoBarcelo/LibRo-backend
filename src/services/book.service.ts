@@ -118,10 +118,13 @@ class FetchHttpClient implements HttpClient {
   }
 }
 
-const NEW_RELEASES_CACHE_KEY = "new-releases-2025-2026";
+const NEW_RELEASES_CACHE_KEY_PREFIX = "new-releases-2025-2026";
 const NEW_RELEASES_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const NEW_RELEASES_ALLOWED_YEARS = new Set([2025, 2026]);
 const NEW_RELEASES_ALLOWED_LANGUAGES = new Set(["eng", "spa"]);
+const NEW_RELEASES_RESULT_LIMIT = 10;
+const NEW_RELEASES_PRIORITY_AUTHORS_LIMIT = 6;
+const NEW_RELEASES_PER_AUTHOR_LIMIT = 2;
 
 export class BookService {
   private readonly httpClient: HttpClient;
@@ -378,39 +381,136 @@ export class BookService {
   }
 
   async getNewReleases(): Promise<BookNewReleaseDto[]> {
-    const cached = this.getCachedNewReleases(NEW_RELEASES_CACHE_KEY);
+    const preferredAuthors = await this.getPreferredAuthorsForNewReleases();
+    const cacheKey = this.buildNewReleasesCacheKey(preferredAuthors);
+
+    const cached = this.getCachedNewReleases(cacheKey);
     if (cached) {
       return cached;
     }
 
     const request2025 = this.fetchBooksByPublishYear(2025, this.getRandomPage());
     const request2026 = this.fetchBooksByPublishYear(2026, this.getRandomPage());
+    const prioritizedRequest = this.fetchPrioritizedBooksByAuthors(preferredAuthors);
 
-    const [result2025, result2026] = await Promise.allSettled([request2025, request2026]);
+    const [result2025, result2026, prioritizedResult] = await Promise.allSettled([
+      request2025,
+      request2026,
+      prioritizedRequest,
+    ]);
 
     const books2025 = this.resolveNewReleaseDocs(result2025, 2025);
     const books2026 = this.resolveNewReleaseDocs(result2026, 2026);
+    const prioritizedBooks = this.resolvePrioritizedNewReleaseDocs(prioritizedResult);
 
-    const allBooks = [...books2025, ...books2026];
+    const randomBooks = this.shuffleArray([...books2025, ...books2026]).filter((doc) =>
+      this.isValidNewReleaseDoc(doc)
+    );
 
-    const novedades = this.shuffleArray(allBooks)
-      .filter(
-        (doc) =>
-          Boolean(doc.cover_i) &&
-          Boolean(doc.title?.trim()) &&
-          Boolean(doc.key?.trim()) &&
-          NEW_RELEASES_ALLOWED_YEARS.has(doc.first_publish_year ?? -1) &&
-          this.hasAllowedNewReleaseLanguage(doc)
-      )
+    const prioritizedCandidates = prioritizedBooks
+      .filter((doc) => this.isValidNewReleaseDoc(doc))
+      .sort((left, right) => (right.first_publish_year ?? 0) - (left.first_publish_year ?? 0));
+
+    const selectedDocs = this.takeUniqueNewReleaseDocs(
+      [...prioritizedCandidates, ...randomBooks],
+      NEW_RELEASES_RESULT_LIMIT
+    );
+
+    const novedades = selectedDocs
       .map((doc) => this.mapOpenLibraryDocToNewReleaseItem(doc))
       .filter((item): item is BookNewReleaseDto => item !== null)
-      .slice(0, 10);
+      .slice(0, NEW_RELEASES_RESULT_LIMIT);
 
     if (novedades.length > 0) {
-      this.setCachedNewReleases(NEW_RELEASES_CACHE_KEY, novedades);
+      this.setCachedNewReleases(cacheKey, novedades);
     }
 
     return novedades;
+  }
+
+  private async getPreferredAuthorsForNewReleases(): Promise<string[]> {
+    try {
+      const userBooks = await prisma.userBook.findMany({
+        orderBy: { createdAt: "desc" },
+        include: {
+          book: {
+            select: {
+              author: true,
+            },
+          },
+        },
+      });
+
+      const deduplicatedAuthors: string[] = [];
+      const seenAuthors = new Set<string>();
+
+      for (const userBook of userBooks) {
+        const author = userBook.book.author?.trim();
+        if (!author) {
+          continue;
+        }
+
+        const normalizedAuthor = this.normalizeQuery(author);
+        if (seenAuthors.has(normalizedAuthor)) {
+          continue;
+        }
+
+        seenAuthors.add(normalizedAuthor);
+        deduplicatedAuthors.push(author);
+
+        if (deduplicatedAuthors.length >= NEW_RELEASES_PRIORITY_AUTHORS_LIMIT) {
+          break;
+        }
+      }
+
+      return deduplicatedAuthors;
+    } catch (error) {
+      console.error("[NewReleases] Failed to load preferred authors from saved list:", error);
+      return [];
+    }
+  }
+
+  private buildNewReleasesCacheKey(authors: string[]): string {
+    const normalizedAuthors = authors
+      .map((author) => this.normalizeQuery(author))
+      .filter(Boolean)
+      .slice(0, NEW_RELEASES_PRIORITY_AUTHORS_LIMIT)
+      .sort();
+
+    if (!normalizedAuthors.length) {
+      return `${NEW_RELEASES_CACHE_KEY_PREFIX}:random`;
+    }
+
+    return `${NEW_RELEASES_CACHE_KEY_PREFIX}:${normalizedAuthors.join("|")}`;
+  }
+
+  private async fetchPrioritizedBooksByAuthors(authors: string[]): Promise<OpenLibrarySearchDoc[]> {
+    if (!authors.length) {
+      return [];
+    }
+
+    const prioritizedAuthors = this.shuffleArray(authors).slice(0, NEW_RELEASES_PRIORITY_AUTHORS_LIMIT);
+
+    const resultsByAuthor = await Promise.all(
+      prioritizedAuthors.map(async (author) => {
+        const [result2026, result2025] = await Promise.allSettled([
+          this.fetchBooksByAuthorAndYear(author, 2026, this.getRandomPage()),
+          this.fetchBooksByAuthorAndYear(author, 2025, this.getRandomPage()),
+        ]);
+
+        const docs2026 = this.resolveAuthorNewReleaseDocs(result2026, author, 2026);
+        const docs2025 = this.resolveAuthorNewReleaseDocs(result2025, author, 2025);
+
+        const authorDocs = [...docs2026, ...docs2025]
+          .filter((doc) => this.isDocFromAuthor(doc, author))
+          .filter((doc) => this.isValidNewReleaseDoc(doc))
+          .sort((left, right) => (right.first_publish_year ?? 0) - (left.first_publish_year ?? 0));
+
+        return this.takeUniqueNewReleaseDocs(authorDocs, NEW_RELEASES_PER_AUTHOR_LIMIT);
+      })
+    );
+
+    return resultsByAuthor.flat();
   }
 
   private mapOpenLibraryDocToListItem(doc: OpenLibrarySearchDoc): BookSearchListItemDto {
@@ -558,6 +658,37 @@ export class BookService {
     });
   }
 
+  private async fetchBooksByAuthorAndYear(
+    author: string,
+    year: number,
+    page: number
+  ): Promise<OpenLibrarySearchDoc[]> {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), OPEN_LIBRARY_TIMEOUT_MS);
+
+    try {
+      const legacyEndpoint = `${OPEN_LIBRARY_SEARCH_URL}?author=${encodeURIComponent(
+        author
+      )}&publish_year=${year}&page=${page}&limit=50`;
+      const legacyPayload = await this.requestJson<SearchResponse>(legacyEndpoint, abortController.signal);
+      const legacyDocs = legacyPayload.docs ?? [];
+
+      if (legacyDocs.length > 0) {
+        return legacyDocs;
+      }
+
+      const sanitizedAuthor = author.replace(/"/g, "").trim();
+      const queryEndpoint = `${OPEN_LIBRARY_SEARCH_URL}?q=${encodeURIComponent(
+        `author:"${sanitizedAuthor}" AND publish_year:${year}`
+      )}&page=${page}&limit=50`;
+
+      const queryPayload = await this.requestJson<SearchResponse>(queryEndpoint, abortController.signal);
+      return queryPayload.docs ?? [];
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async fetchBooksByPublishYear(year: number, page: number): Promise<OpenLibrarySearchDoc[]> {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), OPEN_LIBRARY_TIMEOUT_MS);
@@ -592,6 +723,80 @@ export class BookService {
 
     console.error(`[OpenLibrary] Failed to fetch new releases for ${year}:`, settled.reason);
     return [];
+  }
+
+  private resolvePrioritizedNewReleaseDocs(
+    settled: PromiseSettledResult<OpenLibrarySearchDoc[]>
+  ): OpenLibrarySearchDoc[] {
+    if (settled.status === "fulfilled") {
+      return settled.value;
+    }
+
+    console.error("[OpenLibrary] Failed to fetch prioritized new releases:", settled.reason);
+    return [];
+  }
+
+  private resolveAuthorNewReleaseDocs(
+    settled: PromiseSettledResult<OpenLibrarySearchDoc[]>,
+    author: string,
+    year: number
+  ): OpenLibrarySearchDoc[] {
+    if (settled.status === "fulfilled") {
+      return settled.value;
+    }
+
+    console.error(`[OpenLibrary] Failed to fetch new releases for author '${author}' in ${year}:`, settled.reason);
+    return [];
+  }
+
+  private isDocFromAuthor(doc: OpenLibrarySearchDoc, author: string): boolean {
+    const normalizedAuthor = this.normalizeQuery(author);
+
+    return (doc.author_name ?? []).some((authorName) => {
+      const normalizedAuthorName = this.normalizeQuery(authorName ?? "");
+
+      if (!normalizedAuthorName) {
+        return false;
+      }
+
+      return (
+        normalizedAuthorName === normalizedAuthor ||
+        normalizedAuthorName.includes(normalizedAuthor) ||
+        normalizedAuthor.includes(normalizedAuthorName)
+      );
+    });
+  }
+
+  private isValidNewReleaseDoc(doc: OpenLibrarySearchDoc): boolean {
+    return (
+      Boolean(doc.cover_i) &&
+      Boolean(doc.title?.trim()) &&
+      Boolean(doc.key?.trim()) &&
+      NEW_RELEASES_ALLOWED_YEARS.has(doc.first_publish_year ?? -1) &&
+      this.hasAllowedNewReleaseLanguage(doc)
+    );
+  }
+
+  private takeUniqueNewReleaseDocs(docs: OpenLibrarySearchDoc[], limit: number): OpenLibrarySearchDoc[] {
+    const uniqueDocs: OpenLibrarySearchDoc[] = [];
+    const seenWorkKeys = new Set<string>();
+
+    for (const doc of docs) {
+      const workKey = doc.key?.trim();
+
+      if (!workKey || seenWorkKeys.has(workKey)) {
+        continue;
+      }
+
+      seenWorkKeys.add(workKey);
+      uniqueDocs.push(doc);
+
+      if (uniqueDocs.length >= limit) {
+        break;
+      }
+    }
+
+    return uniqueDocs;
   }
 
   private mapOpenLibraryDocToNewReleaseItem(doc: OpenLibrarySearchDoc): BookNewReleaseDto | null {
