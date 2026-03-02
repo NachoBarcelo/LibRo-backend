@@ -23,3 +23,11 @@ export interface BookEditionDto {
   editorial: string | null;
   imagen: string | null;
 }
+
+export interface BookNewReleaseDto {
+  titulo: string;
+  autor: string;
+  anio: number;
+  imagen: string;
+  workKey: string;
+}

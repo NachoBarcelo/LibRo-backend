@@ -96,6 +96,41 @@ Notas:
 - El backend devuelve hasta 100 ediciones por request.
 - Si no hay ediciones, devuelve [] (array vacio).
 
+2.3) Novedades (libros aleatorios recientes)
+GET /books/new-releases
+
+Objetivo:
+- Obtener hasta 10 libros aleatorios para la seccion "Novedades".
+- Solo usa Open Library (publicados en 2025 y 2026).
+
+Respuesta (array):
+[
+  {
+    "titulo": "Book title",
+    "autor": "Author name",
+    "anio": 2025,
+    "imagen": "https://covers.openlibrary.org/b/id/123456-L.jpg",
+    "workKey": "/works/OL12345W"
+  }
+]
+
+Reglas de datos:
+- Siempre devuelve array (nunca error de negocio para frontend).
+- Puede devolver menos de 10 si Open Library no trae suficientes resultados validos.
+- Si Open Library falla total/parcialmente, devuelve los disponibles o [] si no hay nada.
+- imagen siempre viene con URL valida de cover (no incluye items sin cover).
+- autor toma el primer author_name disponible; puede venir "" si no hay autor.
+
+Cache backend:
+- Cache en memoria por 12 horas.
+- Clave interna: "new-releases-2025-2026".
+- Durante ese periodo la lista puede repetirse, luego se regenera aleatoriamente.
+
+Sugerencia de uso en frontend:
+- Llamar GET /books/new-releases al cargar Home.
+- Si viene [], mostrar estado vacio: "No hay novedades por ahora".
+- No bloquear el render de la pantalla si este request tarda/falla.
+
 3) Crear libro local (si no existe por externalId)
 POST /books
 Body JSON:
@@ -227,7 +262,12 @@ DELETE /reviews/:id
 
 Flujo recomendado en frontend
 -----------------------------
-A) Buscar y guardar libro en favoritos
+A) Cargar Home con Novedades
+1. Front llama GET /books/new-releases al iniciar la pantalla principal.
+2. Renderiza cards con titulo, autor, anio, imagen y conserva workKey para acciones futuras.
+3. Si respuesta es [], mostrar empty state sin error bloqueante.
+
+B) Buscar y guardar libro en favoritos
 1. Front llama GET /api/books/search?query=...
 2. Recibir array de coincidencias y renderizar listado.
 3. Al seleccionar una coincidencia, pedir detalle con GET /api/books/search/detail?query=... para obtener edicion priorizada.
@@ -235,17 +275,17 @@ A) Buscar y guardar libro en favoritos
 5. Tomar id del libro devuelto.
 6. Front llama POST /user-books con { bookId, status: "FAVORITE" }.
 
-B) Mover entre listas
+C) Mover entre listas
 - Usar POST /user-books con mismo bookId y nuevo status.
   Ejemplo: FAVORITE -> READ.
 
-C) Crear y mostrar reseñas
+D) Crear y mostrar reseñas
 1. Crear con POST /reviews (bookId, title, content, rating).
 2. Listar con GET /reviews o GET /reviews/book/:bookId.
 3. Editar con PUT /reviews/:id.
 4. Eliminar con DELETE /reviews/:id.
 
-D) Pantalla de detalle de libro en frontend
+E) Pantalla de detalle de libro en frontend
 1. Tener el id local del libro (UUID) desde GET /books o desde la creacion (POST /books).
 2. Llamar GET /books/:id al abrir la vista de detalle.
 3. Pintar:

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import {
   createBookIfMissing,
+  getNewReleases,
   getOpenLibraryWorkEditions,
   getAllBooks,
   getBookDetailsById,
@@ -64,6 +65,15 @@ export async function listBookEditions(req: Request, res: Response, next: NextFu
     const workId = String(req.params.workId ?? "");
     const editions = await getOpenLibraryWorkEditions(workId);
     res.status(200).json(editions);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listNewReleases(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const books = await getNewReleases();
+    res.status(200).json(books);
   } catch (error) {
     next(error);
   }

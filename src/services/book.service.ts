@@ -1,6 +1,11 @@
 import prisma from "../lib/prisma";
 import { AppError } from "../middlewares/error.middleware";
-import { BookEditionDto, BookSearchDetailDto, BookSearchListItemDto } from "../dtos/book.dto";
+import {
+  BookEditionDto,
+  BookNewReleaseDto,
+  BookSearchDetailDto,
+  BookSearchListItemDto,
+} from "../dtos/book.dto";
 
 interface CreateBookInput {
   externalId: string;
@@ -13,6 +18,7 @@ interface CreateBookInput {
 interface OpenLibrarySearchDoc {
   title?: string;
   author_name?: string[];
+  first_publish_year?: number;
   cover_i?: number;
   key?: string;
 }
@@ -86,9 +92,43 @@ interface SearchDetailCacheEntry {
   expiresAt: number;
 }
 
+interface NewReleasesCacheEntry {
+  data: BookNewReleaseDto[];
+  expiresAt: number;
+}
+
+interface HttpClient {
+  get<T>(url: string, signal: AbortSignal): Promise<T>;
+}
+
+class FetchHttpClient implements HttpClient {
+  async get<T>(url: string, signal: AbortSignal): Promise<T> {
+    const response = await fetch(url, { signal });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new AppError("Book not found", 404, { status: response.status, url });
+      }
+
+      throw new AppError("Open Library returned an error", 502, { status: response.status, url });
+    }
+
+    return (await response.json()) as T;
+  }
+}
+
+const NEW_RELEASES_CACHE_KEY = "new-releases-2025-2026";
+const NEW_RELEASES_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
 export class BookService {
+  private readonly httpClient: HttpClient;
   private readonly searchCache = new Map<string, SearchCacheEntry>();
   private readonly searchDetailCache = new Map<string, SearchDetailCacheEntry>();
+  private readonly newReleasesCache = new Map<string, NewReleasesCacheEntry>();
+
+  constructor(httpClient: HttpClient = new FetchHttpClient()) {
+    this.httpClient = httpClient;
+  }
 
   async createBookIfMissing(data: CreateBookInput) {
     const normalizedExternalId = await this.resolveExternalIdForStorage(
@@ -334,6 +374,32 @@ export class BookService {
     }
   }
 
+  async getNewReleases(): Promise<BookNewReleaseDto[]> {
+    const cached = this.getCachedNewReleases(NEW_RELEASES_CACHE_KEY);
+    if (cached) {
+      return cached;
+    }
+
+    const request2025 = this.fetchBooksByPublishYear(2025, this.getRandomPage());
+    const request2026 = this.fetchBooksByPublishYear(2026, this.getRandomPage());
+
+    const [result2025, result2026] = await Promise.allSettled([request2025, request2026]);
+
+    const books2025 = this.resolveNewReleaseDocs(result2025, 2025);
+    const books2026 = this.resolveNewReleaseDocs(result2026, 2026);
+
+    const allBooks = [...books2025, ...books2026];
+
+    const novedades = this.shuffleArray(allBooks)
+      .filter((doc) => Boolean(doc.cover_i) && Boolean(doc.title?.trim()) && Boolean(doc.key?.trim()))
+      .map((doc) => this.mapOpenLibraryDocToNewReleaseItem(doc))
+      .filter((item): item is BookNewReleaseDto => item !== null)
+      .slice(0, 10);
+
+    this.setCachedNewReleases(NEW_RELEASES_CACHE_KEY, novedades);
+    return novedades;
+  }
+
   private mapOpenLibraryDocToListItem(doc: OpenLibrarySearchDoc): BookSearchListItemDto {
     const titulo = doc.title?.trim() || "";
     const autor = doc.author_name?.find((name) => name?.trim())?.trim() || "";
@@ -457,18 +523,92 @@ export class BookService {
     });
   }
 
-  private async requestJson<T>(url: string, signal: AbortSignal): Promise<T> {
-    const response = await fetch(url, { signal });
+  private getCachedNewReleases(cacheKey: string): BookNewReleaseDto[] | null {
+    const cached = this.newReleasesCache.get(cacheKey);
 
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new AppError("Book not found", 404, { status: response.status, url });
-      }
-
-      throw new AppError("Open Library returned an error", 502, { status: response.status, url });
+    if (!cached) {
+      return null;
     }
 
-    return (await response.json()) as T;
+    if (cached.expiresAt <= Date.now()) {
+      this.newReleasesCache.delete(cacheKey);
+      return null;
+    }
+
+    return cached.data;
+  }
+
+  private setCachedNewReleases(cacheKey: string, data: BookNewReleaseDto[]): void {
+    this.newReleasesCache.set(cacheKey, {
+      data,
+      expiresAt: Date.now() + NEW_RELEASES_CACHE_TTL_MS,
+    });
+  }
+
+  private async fetchBooksByPublishYear(year: number, page: number): Promise<OpenLibrarySearchDoc[]> {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), OPEN_LIBRARY_TIMEOUT_MS);
+
+    try {
+      const endpoint = `${OPEN_LIBRARY_SEARCH_URL}?publish_year=${year}&page=${page}&limit=50`;
+      const payload = await this.requestJson<SearchResponse>(endpoint, abortController.signal);
+      return payload.docs ?? [];
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private resolveNewReleaseDocs(
+    settled: PromiseSettledResult<OpenLibrarySearchDoc[]>,
+    year: number
+  ): OpenLibrarySearchDoc[] {
+    if (settled.status === "fulfilled") {
+      return settled.value;
+    }
+
+    console.error(`[OpenLibrary] Failed to fetch new releases for ${year}:`, settled.reason);
+    return [];
+  }
+
+  private mapOpenLibraryDocToNewReleaseItem(doc: OpenLibrarySearchDoc): BookNewReleaseDto | null {
+    const titulo = doc.title?.trim();
+    const workKey = doc.key?.trim();
+    const coverId = doc.cover_i;
+    const anio = doc.first_publish_year;
+    const imagen = this.buildCoverByCoverId(coverId);
+
+    if (!titulo || !workKey || !coverId || !anio || !imagen) {
+      return null;
+    }
+
+    return {
+      titulo,
+      autor: doc.author_name?.find((name) => name?.trim())?.trim() || "",
+      anio,
+      imagen,
+      workKey,
+    };
+  }
+
+  private getRandomPage(): number {
+    return Math.floor(Math.random() * 5) + 1;
+  }
+
+  private shuffleArray<T>(items: T[]): T[] {
+    const shuffled = [...items];
+
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      const currentItem = shuffled[index];
+      shuffled[index] = shuffled[randomIndex];
+      shuffled[randomIndex] = currentItem;
+    }
+
+    return shuffled;
+  }
+
+  private async requestJson<T>(url: string, signal: AbortSignal): Promise<T> {
+    return this.httpClient.get<T>(url, signal);
   }
 
   private async fetchOpenLibraryDetails(externalId: string): Promise<unknown | null> {
@@ -707,4 +847,8 @@ export async function searchOpenLibraryBookDetails(query: string): Promise<BookS
 
 export async function getOpenLibraryWorkEditions(workId: string): Promise<BookEditionDto[]> {
   return bookService.getOpenLibraryWorkEditions(workId);
+}
+
+export async function getNewReleases(): Promise<BookNewReleaseDto[]> {
+  return bookService.getNewReleases();
 }

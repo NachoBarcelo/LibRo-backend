@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createBook, getBook, listBookEditions, listBooks } from "../controllers/book.controller";
+import { createBook, getBook, listBookEditions, listBooks, listNewReleases } from "../controllers/book.controller";
 import { validate } from "../middlewares/validate.middleware";
 import { z } from "zod";
 
@@ -23,6 +23,7 @@ const getBookEditionsParamsSchema = z.object({
 
 router.post("/", validate(createBookSchema), createBook);
 router.get("/", listBooks);
+router.get("/new-releases", listNewReleases);
 router.get("/:workId/editions", validate(getBookEditionsParamsSchema, "params"), listBookEditions);
 router.get("/:id", validate(getBookParamsSchema, "params"), getBook);
 
